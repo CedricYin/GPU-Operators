@@ -28,7 +28,7 @@ __device__ void warp_reduce(volatile int *input, unsigned tid) {
 }
 
 // using warp reduce
-__global__ void reduce_warp_reduce(int *input, int *output) {
+__global__ void reduce_block_reduce(int *input, int *output) {
     extern __shared__ int input_s[];
     unsigned start_idx = COARSE_FACTOR * 2 * BLOCKDIM * blockIdx.x;
     unsigned tid = threadIdx.x;
@@ -41,11 +41,31 @@ __global__ void reduce_warp_reduce(int *input, int *output) {
     input_s[tid] = sum;
     __syncthreads();
 
-    for (unsigned stride = BLOCKDIM / 2; stride > 32; stride /= 2) {
-        if (tid < stride)
-            input_s[tid] += input_s[tid + stride];
-        __syncthreads();
+    // unrolling: just like block reduce
+  if (BLOCKDIM >= 1024) {
+    if (threadIdx.x < 512) {
+      input_s[threadIdx.x] += input_s[threadIdx.x + 512];
     }
+    __syncthreads();
+  }
+  if (BLOCKDIM >= 512) {
+    if (threadIdx.x < 256) {
+      input_s[threadIdx.x] += input_s[threadIdx.x + 256];
+    }
+    __syncthreads();
+  }
+  if (BLOCKDIM >= 256) {
+    if (threadIdx.x < 128) {
+      input_s[threadIdx.x] += input_s[threadIdx.x + 128];
+    }
+    __syncthreads();
+  }
+  if (BLOCKDIM >= 128) {
+    if (threadIdx.x < 64) {
+      input_s[threadIdx.x] += input_s[threadIdx.x + 64];
+    }
+    __syncthreads();
+  }
     
     if (tid < 32) {
         warp_reduce(input_s, tid);
@@ -80,7 +100,7 @@ int main() {
     cudaEventCreate(&stop);
     cudaEventRecord(start);
 
-    reduce_warp_reduce<<<gridDim, blockDim, BLOCKDIM * sizeof(int)>>>(input_d, output_d);
+    reduce_block_reduce<<<gridDim, blockDim, BLOCKDIM * sizeof(int)>>>(input_d, output_d);
 
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
