@@ -17,10 +17,11 @@ __global__ void reduce_thread_coarsening(int *input, int *output) {
     unsigned tid = threadIdx.x;
     unsigned i = start_idx + tid;
 
-    input_s[tid] = input[i];
+    int sum = input[i];  // local var
     for (unsigned tile = 1; tile < COARSE_FACTOR * 2; tile++) {
-        input_s[tid] += input[i + tile * BLOCKDIM];
+        sum += input[i + tile * BLOCKDIM];
     }
+    input_s[tid] = sum;
 
     for (unsigned stride = BLOCKDIM / 2; stride >= 1; stride /= 2) {
         __syncthreads();
