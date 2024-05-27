@@ -22,19 +22,6 @@ __global__ void reduce_baseline(int *input, int *output) {
     }
 }
 
-// // Minimizing control divergence
-// __global__ void reduce0(int *input, int *output) {
-//     unsigned i = threadIdx.x;
-//     for (unsigned stride = blockDim.x; stride >= 1; stride /= 2) {
-//         if (threadIdx.x < stride)
-//             input[i] += input[i + stride];
-//         __syncthreads();
-//     }
-//     if (threadIdx.x == 0) {
-//         *output = input[0];
-//     }
-// }
-
 int main() {
     int *input_h = NULL;
     int *output_h = NULL;
