@@ -42,30 +42,30 @@ __global__ void reduce_block_reduce(int *input, int *output) {
     __syncthreads();
 
     // unrolling: just like block reduce
-  if (BLOCKDIM >= 1024) {
-    if (threadIdx.x < 512) {
-      input_s[threadIdx.x] += input_s[threadIdx.x + 512];
+    if (BLOCKDIM >= 1024) {
+      if (threadIdx.x < 512) {
+        input_s[threadIdx.x] += input_s[threadIdx.x + 512];
+      }
+      __syncthreads();
     }
-    __syncthreads();
-  }
-  if (BLOCKDIM >= 512) {
-    if (threadIdx.x < 256) {
-      input_s[threadIdx.x] += input_s[threadIdx.x + 256];
+    if (BLOCKDIM >= 512) {
+      if (threadIdx.x < 256) {
+        input_s[threadIdx.x] += input_s[threadIdx.x + 256];
+      }
+      __syncthreads();
     }
-    __syncthreads();
-  }
-  if (BLOCKDIM >= 256) {
-    if (threadIdx.x < 128) {
-      input_s[threadIdx.x] += input_s[threadIdx.x + 128];
+    if (BLOCKDIM >= 256) {
+      if (threadIdx.x < 128) {
+        input_s[threadIdx.x] += input_s[threadIdx.x + 128];
+      }
+      __syncthreads();
     }
-    __syncthreads();
-  }
-  if (BLOCKDIM >= 128) {
-    if (threadIdx.x < 64) {
-      input_s[threadIdx.x] += input_s[threadIdx.x + 64];
+    if (BLOCKDIM >= 128) {
+      if (threadIdx.x < 64) {
+        input_s[threadIdx.x] += input_s[threadIdx.x + 64];
+      }
+      __syncthreads();
     }
-    __syncthreads();
-  }
     
     if (tid < 32) {
         warp_reduce(input_s, tid);
