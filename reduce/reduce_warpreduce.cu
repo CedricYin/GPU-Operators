@@ -11,12 +11,12 @@
 using namespace std;
 
 __device__ void warp_reduce(volatile int *input, unsigned tid) {
-    input[tid] += input[tid + 32];
-    input[tid] += input[tid + 16];
-    input[tid] += input[tid + 8];
-    input[tid] += input[tid + 4];
-    input[tid] += input[tid + 2];
-    input[tid] += input[tid + 1];
+    input[tid] += input[tid + 32]; __syncwarp();
+    input[tid] += input[tid + 16]; __syncwarp();
+    input[tid] += input[tid + 8]; __syncwarp();
+    input[tid] += input[tid + 4]; __syncwarp();
+    input[tid] += input[tid + 2]; __syncwarp();
+    input[tid] += input[tid + 1]; __syncwarp();
 }
 
 // using warp reduce
