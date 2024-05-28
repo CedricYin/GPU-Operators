@@ -14,7 +14,7 @@ using namespace std;
 
 #define FETCH_VEC4(ptr) (((float4 *) (ptr))[0])
 
-__global__ void elementwise1_vec2(float *a, float *b, float *c) {
+__global__ void elementwise2_vec4(float *a, float *b, float *c) {
     int i = (blockDim.x * blockIdx.x + threadIdx.x) * VECTOR_FACTOR;
     float4 vec2_a = FETCH_VEC4(&a[i]);
     float4 vec2_b = FETCH_VEC4(&b[i]);
@@ -56,7 +56,7 @@ int main() {
     dim3 gridDim(ceil(1.f * N / BLOCKDIM / VECTOR_FACTOR));
     dim3 blockDim(BLOCKDIM);
     cudaEventRecord(start);
-    elementwise1_vec2<<<gridDim, blockDim>>>(a_d, b_d, c_d);
+    elementwise2_vec4<<<gridDim, blockDim>>>(a_d, b_d, c_d);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     float elapsedTime;
