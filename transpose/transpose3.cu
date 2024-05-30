@@ -15,17 +15,21 @@ using namespace std;
 }
 
 
-template<int COARSE_FACTOR>
-__global__ void transpose2_coarsening(float *a, float *b, size_t rows, size_t cols) {
-    unsigned col = blockDim.x * blockIdx.x + threadIdx.x;
-    unsigned row = blockDim.y * blockIdx.y * COARSE_FACTOR + threadIdx.y;
-    unsigned idx_a = row * cols + col;
-    unsigned idx_b = col * rows + row;
+template<int TILEDIM>
+__global__ void transpose3_shared(float *input, float *output, size_t rows, size_t cols) {
+    int ty = threadIdx.y;
+    int tx = threadIdx.x;
+    int igy_start = blockDim.y * blockIdx.y;
+    int igx_start = blockDim.x * blockIdx.x;
+    int ogy_start = blockDim.y * blockIdx.x;
+    int ogx_start = blockDim.x * blockIdx.y;
+    __shared__ float tile[TILEDIM][TILEDIM];
 
-    if (row < rows && col < cols) {
-        #pragma unroll
-        for (int i = 0; i < COARSE_FACTOR; i++)
-            b[idx_b + i * blockDim.y] = a[idx_a + i * blockDim.y * cols];
+    if (igy_start + ty < rows && igx_start + tx < cols) {
+        tile[ty][tx] = input[(igy_start + ty) * cols + (igx_start + tx)];
+        __syncthreads();
+
+        output[(ogy_start + ty) * rows + (ogx_start + tx)] = tile[tx][ty];  // 转置后的leading dimension变成了rows
     }
 }
 
@@ -43,8 +47,8 @@ int main() {
     const int ROWS = 4096;
     const int COLS = 4096 * 32;
     const int N = ROWS * COLS;
-    const int BLOCKDIM = 64;
-    const int COARSE_FACTOR = 4;
+    const int BLOCKDIM = 32;
+    const int TILEDIM = 32;
     const size_t accessed_bytes = N * sizeof(float) * 2;
 
     size_t size = N * sizeof(float);
@@ -65,7 +69,7 @@ int main() {
     checkCudaErrors(cudaMemcpy(a_d, a_h, size, cudaMemcpyHostToDevice));
     
     dim3 gridDim(ceil(1.f * COLS / BLOCKDIM), ceil(1.f * ROWS / BLOCKDIM), 1);
-    dim3 blockDim(BLOCKDIM, BLOCKDIM / COARSE_FACTOR, 1);
+    dim3 blockDim(BLOCKDIM, BLOCKDIM, 1);
     cudaEvent_t start, stop;
     checkCudaErrors(cudaEventCreate(&start));
     checkCudaErrors(cudaEventCreate(&stop));
@@ -75,7 +79,7 @@ int main() {
 
     for (int i = 0; i < nWarmup + nIter; i++) {
         checkCudaErrors(cudaEventRecord(start));
-        transpose2_coarsening<COARSE_FACTOR><<<gridDim, blockDim>>>(a_d, b_d, ROWS, COLS);
+        transpose3_shared<TILEDIM><<<gridDim, blockDim>>>(a_d, b_d, ROWS, COLS);
         checkCudaErrors(cudaEventRecord(stop));
         checkCudaErrors(cudaEventSynchronize(stop));
         if (i < nWarmup) {
@@ -93,7 +97,6 @@ int main() {
             elapsed += ms;
         }
     }
-
     cout << "average elapsed time: " << elapsed / nIter << "ms\n";
     double bw = accessed_bytes / (elapsed / nIter / 1000) / 1e9;
     cout << "bandwidth: " << bw << "GB/s, " << bw / 900 * 100 << "% of peak bandwidth" << endl;
