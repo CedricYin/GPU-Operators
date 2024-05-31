@@ -15,17 +15,29 @@ using namespace std;
 }
 
 
-template<int COARSE_FACTOR>
-__global__ void transpose2_coarsening(float *a, float *b, size_t rows, size_t cols) {
-    unsigned col = blockDim.x * blockIdx.x + threadIdx.x;
-    unsigned row = blockDim.y * blockIdx.y * COARSE_FACTOR + threadIdx.y;
-    unsigned idx_a = row * cols + col;
-    unsigned idx_b = col * rows + row;
+template<int TILEDIM, int TILE_SCALING>
+__global__ void transpose6_doubleBuffering(float *input, float *output, size_t rows, size_t cols) {
+    int ty = threadIdx.y;
+    int tx = threadIdx.x;
+    int igy_start = blockDim.y * blockIdx.y * TILE_SCALING;
+    int igx_start = blockDim.x * blockIdx.x;
+    int ogy_start = blockDim.y * blockIdx.x;
+    int ogx_start = blockDim.x * blockIdx.y * TILE_SCALING;
+    __shared__ float tile[2][TILEDIM][TILEDIM + 1];  // double buffer
 
-    if (row < rows && col < cols) {
+    if (igy_start + ty < rows && igx_start + tx < cols) {
+        // 1st g2s
+        tile[0][ty][tx] = input[(igy_start + ty) * cols + (igx_start + tx)];
         #pragma unroll
-        for (int i = 0; i < COARSE_FACTOR; i++)
-            b[idx_b + i * blockDim.y] = a[idx_a + i * blockDim.y * cols];
+        for (int i = 0; i < TILE_SCALING; i++) {
+            __syncthreads();
+            // s2g
+            output[(ogy_start + ty) * rows + (ogx_start + tx + i * TILEDIM)] = tile[i & 1][tx][ty];
+            if (i + 1 < TILE_SCALING) {
+                // g2s
+                tile[(i + 1) & 1][ty][tx] = input[(igy_start + ty + (i + 1) * TILEDIM) * cols + (igx_start + tx)];
+            }
+        }
     }
 }
 
@@ -43,8 +55,9 @@ int main() {
     const int ROWS = 4096;
     const int COLS = 4096 * 32;
     const int N = ROWS * COLS;
-    const int BLOCKDIM = 64;
-    const int COARSE_FACTOR = 4;
+    const int BLOCKDIM = 32;
+    const int TILEDIM = 32;
+    const int TILE_SCALING = 2;
     const size_t accessed_bytes = N * sizeof(float) * 2;
 
     size_t size = N * sizeof(float);
@@ -64,8 +77,8 @@ int main() {
     checkCudaErrors(cudaMalloc((void **) &b_d, size));
     checkCudaErrors(cudaMemcpy(a_d, a_h, size, cudaMemcpyHostToDevice));
     
-    dim3 gridDim(ceil(1.f * COLS / BLOCKDIM), ceil(1.f * ROWS / BLOCKDIM), 1);
-    dim3 blockDim(BLOCKDIM, BLOCKDIM / COARSE_FACTOR, 1);
+    dim3 gridDim(ceil(1.f * COLS / BLOCKDIM), ceil(1.f * ROWS / BLOCKDIM / TILE_SCALING), 1);
+    dim3 blockDim(BLOCKDIM, BLOCKDIM, 1);
     cudaEvent_t start, stop;
     checkCudaErrors(cudaEventCreate(&start));
     checkCudaErrors(cudaEventCreate(&stop));
@@ -75,7 +88,7 @@ int main() {
 
     for (int i = 0; i < nWarmup + nIter; i++) {
         checkCudaErrors(cudaEventRecord(start));
-        transpose2_coarsening<COARSE_FACTOR><<<gridDim, blockDim>>>(a_d, b_d, ROWS, COLS);
+        transpose6_doubleBuffering<TILEDIM, TILE_SCALING><<<gridDim, blockDim>>>(a_d, b_d, ROWS, COLS);
         checkCudaErrors(cudaEventRecord(stop));
         checkCudaErrors(cudaEventSynchronize(stop));
         if (i < nWarmup) {
@@ -93,7 +106,6 @@ int main() {
             elapsed += ms;
         }
     }
-
     cout << "average elapsed time: " << elapsed / nIter << "ms\n";
     double bw = accessed_bytes / (elapsed / nIter / 1000) / 1e9;
     cout << "bandwidth: " << bw << "GB/s, " << bw / 900 * 100 << "% of peak bandwidth" << endl;
