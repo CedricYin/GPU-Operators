@@ -14,7 +14,7 @@ using namespace std;
 #define TILEDIM 32
 
 // A: M * K; B: K * N
-__global__ void gemm1_shared(float *a, float *b, float *c) {
+__global__ void sgemm_v1(float *a, float *b, float *c) {
     int tx = threadIdx.x, ty = threadIdx.y;
     int bx = blockIdx.x, by = blockIdx.y;
     int grow = by * blockDim.y + ty;
@@ -97,7 +97,7 @@ int main() {
 
     for (int i = 0; i < nIters + nWarmup; i++) {
         cudaEventRecord(start);
-        gemm1_shared<<<gridDim, blockDim>>>(a_d, b_d, c_d);
+        sgemm_v1<<<gridDim, blockDim>>>(a_d, b_d, c_d);
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
         if (i < nWarmup) {

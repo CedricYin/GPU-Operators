@@ -11,18 +11,54 @@ using namespace std;
 #define N 1024
 #define K 1024
 #define BLOCKDIM 32
+#define TILEDIM 32
+#define COARSENING_FACTOR 8  // 线程粗粒度化的因子
+#define PATCH (TILEDIM / COARSENING_FACTOR)  // 同一个thread处理的元素之间间隔的行数
 
 // A: M * K; B: K * N
-__global__ void gemm0_baseline(float *a, float *b, float *c) {
-    int grow = blockDim.y * blockIdx.y + threadIdx.y;
-    int gcol = blockDim.x * blockIdx.x + threadIdx.x;
+__global__ void sgemm_v2(float *a, float *b, float *c) {
+    int tx = threadIdx.x, ty = threadIdx.y;
+    int bx = blockIdx.x, by = blockIdx.y;
+    int grow = by * blockDim.y * COARSENING_FACTOR + ty;
+    int gcol = bx * blockDim.x + tx;
+    __shared__ float tileA[TILEDIM][TILEDIM];
+    __shared__ float tileB[TILEDIM][TILEDIM];
 
-    if (grow < M && gcol < N) {
-        float val = 0.f;
-        for (int k = 0; k < K; k++)
-            val += a[grow * K + k] * b[k * N + gcol];
+    int phase = ceil(1.f * K / TILEDIM);
+    float pval[COARSENING_FACTOR] = {0.f};
+    for (int i = 0; i < phase; i++) {
+        // global -> shared: load tile
+        #pragma unroll
+        for (int j = 0; j < COARSENING_FACTOR; j++) {
+            if (grow + j * PATCH < M && i * TILEDIM + tx < K)
+                tileA[ty + j * PATCH][tx] = a[(grow + j * PATCH) * K + i * TILEDIM + tx];
+            else
+                tileA[ty + j * PATCH][tx] = 0.f;
+        }
+        #pragma unroll
+        for (int j = 0; j < COARSENING_FACTOR; j++) {
+            if (i * TILEDIM + ty + j * PATCH < K && gcol < N)
+                tileB[ty + j * PATCH][tx] = b[(i * TILEDIM + ty + j * PATCH) * N + gcol];
+            else 
+                tileB[ty + j * PATCH][tx] = 0.f;
+        }
+        __syncthreads();
 
-        c[grow * N + gcol] = val;
+        // partial dot product
+        for (int k = 0; k < TILEDIM; k++) {
+            float reg_b = tileB[k][tx];
+            #pragma unroll
+            for (int p = 0; p < COARSENING_FACTOR; p++) {
+                pval[p] += tileA[ty + p * PATCH][k] * reg_b;  // register value can be reused multiple times
+            }
+        }
+        __syncthreads();
+    }
+
+    #pragma unroll
+    for (int i = 0; i < COARSENING_FACTOR; i++) {
+        if (grow + i * PATCH < M && gcol < N)
+            c[(grow + i * PATCH) * N + gcol] = pval[i];
     }
 }
 
@@ -43,7 +79,7 @@ float* init(float *a, float *b) {
 bool check_ans(float *truth, float *c) {
     for (int i = 0; i < M * N; i++)
         if (fabs(c[i] - truth[i]) > 0.5) {
-            printf("truth: %f, output: %f\n", truth[i], c[i]);
+            printf("i: %d, truth: %f, output: %f\n", i, truth[i], c[i]);
             return false;
         }
     return true;
@@ -71,11 +107,11 @@ int main() {
     const int nIters = 3;
 
     dim3 gridDim(ceil(1.f * M / BLOCKDIM), ceil(1.f * N / BLOCKDIM), 1);
-    dim3 blockDim(BLOCKDIM, BLOCKDIM, 1);  // block 的y维缩小COARSENING_FACTOR倍
+    dim3 blockDim(BLOCKDIM, BLOCKDIM / COARSENING_FACTOR, 1);  // block 的y维缩小COARSENING_FACTOR倍
 
     for (int i = 0; i < nIters + nWarmup; i++) {
         cudaEventRecord(start);
-        gemm0_baseline<<<gridDim, blockDim>>>(a_d, b_d, c_d);
+        sgemm_v2<<<gridDim, blockDim>>>(a_d, b_d, c_d);
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
         if (i < nWarmup) {
