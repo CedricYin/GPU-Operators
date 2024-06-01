@@ -66,7 +66,7 @@ int main() {
     cudaMemcpy(a_d, a_h, size, cudaMemcpyHostToDevice);
     cudaMemcpy(b_d, b_h, size, cudaMemcpyHostToDevice);
     dim3 gridDim(ceil(1.f * M / BLOCKDIM), ceil(1.f * N / BLOCKDIM), 1);
-    dim3 blockDim(BLOCKDIM, BLOCKDIM, 1);  // block 的y维缩小COARSENING_FACTOR倍
+    dim3 blockDim(BLOCKDIM, BLOCKDIM, 1);
 
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
@@ -90,7 +90,7 @@ int main() {
     // cublas
     cublasHandle_t handle;
     cublasCreate(&handle);
-    for (int i = 0; i < 50; i++) {
+    for (int i = 0; i < nIters; i++) {
         cudaEventRecord(start);
         cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, b_d, N, a_d, K, &beta, c_d, N);
         cudaEventRecord(stop);
@@ -113,7 +113,7 @@ int main() {
     double gflops_my = flop / ((elapsed_my / nIters) / 1000) / 1e9;
     double gflops_cublas = flop / ((elapsed_cublas / 50) / 1000) / 1e9;
     cout << "mysgemm: " << gflops_my << "GFLOPS (" << flop << " flop, " << (elapsed_my / nIters) / 1000 << "s)\n";
-    cout << "cublas: " << gflops_cublas << "GFLOPS (" << flop << " flop, " << (elapsed_cublas / 50) / 1000 << "s)\n";
+    cout << "cublas: " << gflops_cublas << "GFLOPS (" << flop << " flop, " << (elapsed_cublas / nIters) / 1000 << "s)\n";
     cout << "% of cublas: " << gflops_my / gflops_cublas * 100 << "%" << endl;
 
     return 0;
