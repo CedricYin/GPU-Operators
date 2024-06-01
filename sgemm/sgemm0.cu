@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <sys/cdefs.h>
 #include <cublas_v2.h>
+#include <cassert>
 
 using namespace std;
 
@@ -21,7 +22,7 @@ __global__ void sgemm_v0(const float *__restrict__ a, const float *__restrict__ 
         for (int k = 0; k < K; k++)
             val += a[grow * K + k] * b[k * N + gcol];
 
-        c[grow * N + gcol] = val;
+        c[grow * N + gcol] = alpha * val + beta * c[grow * N + gcol];
     }
 }
 
@@ -41,17 +42,31 @@ bool check_ans(float *truth, float *c, int M, int N) {
     return true;
 }
 
-int main() {
-    const int M = 8192;
-    const int N = 8192;
-    const int K = 4096;
+int main(int argc, char **argv) {
+    // ncu: nvcc -std=c++17 -lineinfo -DPROFILE -o sgemm sgemm.cu        ./sgemm 0 1
+    // compute-santi: nvcc -std=c++17 -o sgemm sgemm.cu                  ./sgemm 0 1 256 256 128
+    // v100:          nvcc -std=c++17 -o sgemm sgemm.cu                  ./sgemm
+    int M = 8192;
+    int N = 8192;
+    int K = 4096;
+    int nWarmup = 2;
+    int nIters = 50;
+    assert(argc == 1 || argc == 3 || argc == 6);
+    if (argc >= 3) {
+        nWarmup = atoi(argv[1]);
+        nIters = atoi(argv[2]);
+    }
+    if (argc >= 6) {
+        M = atoi(argv[3]);
+        N = atoi(argv[4]);
+        K = atoi(argv[5]);
+    }
     const float alpha = 1.f;
     const float beta = 0.f;
     const int BLOCKDIM = 32;
     float elapsed_my = 0.f;
     float elapsed_cublas = 0.f;
-    const int nWarmup = 2;
-    const int nIters = 50;
+
     size_t size = sizeof(float) * M * N;
     float *a_h = (float *) malloc(size);
     float *b_h = (float *) malloc(size);
@@ -87,6 +102,7 @@ int main() {
     }
     cudaMemcpy(c_h, c_d, size, cudaMemcpyDeviceToHost);
 
+    #ifndef PROFILE
     // cublas
     cublasHandle_t handle;
     cublasCreate(&handle);
@@ -99,6 +115,7 @@ int main() {
         cudaEventElapsedTime(&ms, start, stop);
         elapsed_cublas += ms;
     }
+    cublasDestroy(handle);
     cudaMemcpy(c_truth, c_d, size, cudaMemcpyDeviceToHost);
 
     // check
@@ -111,10 +128,21 @@ int main() {
     // output
     const int64_t flop = int64_t(M) * int64_t(N) * int64_t(K) * 2;
     double gflops_my = flop / ((elapsed_my / nIters) / 1000) / 1e9;
-    double gflops_cublas = flop / ((elapsed_cublas / 50) / 1000) / 1e9;
+    double gflops_cublas = flop / ((elapsed_cublas / nIters) / 1000) / 1e9;
     cout << "mysgemm: " << gflops_my << "GFLOPS (" << flop << " flop, " << (elapsed_my / nIters) / 1000 << "s)\n";
     cout << "cublas: " << gflops_cublas << "GFLOPS (" << flop << " flop, " << (elapsed_cublas / nIters) / 1000 << "s)\n";
     cout << "% of cublas: " << gflops_my / gflops_cublas * 100 << "%" << endl;
+    #endif
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+    cudaFree(a_d);
+    cudaFree(b_d);
+    cudaFree(c_d);
+    free(a_h);
+    free(b_h);
+    free(c_h);
+    free(c_truth);
 
     return 0;
 }
