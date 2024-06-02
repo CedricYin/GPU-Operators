@@ -10,41 +10,43 @@
 
 using namespace std;
 
-template<int TILEDIM>
-__global__ void sgemm_v1(const float *__restrict__ a, const float *__restrict__ b, float *c, 
+template<int TM, int TN, int TK>
+__global__ void sgemm_v1(const float *__restrict__ A, const float *__restrict__ B, float *C, 
                         int M, int N, int K,
                         float alpha, float beta) {
-    int tx = threadIdx.x, ty = threadIdx.y;
-    int bx = blockIdx.x, by = blockIdx.y;
-    int grow = by * blockDim.y + ty;
-    int gcol = bx * blockDim.x + tx;
-    __shared__ float tileA[TILEDIM][TILEDIM];
-    __shared__ float tileB[TILEDIM][TILEDIM];
+    const int bx = blockIdx.x;
+    const int by = blockIdx.y;
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
+    __shared__ float As[TM][TK];
+    __shared__ float Bs[TK][TN];
 
-    int phase = ceil(1.f * K / TILEDIM);
+    // 移动到当前C block，以及A和B的起始位置
+    A = &A[by * TM * K];
+    B = &B[bx * TN];
+    C = &C[by * TM * N + bx * TN];
+
     float pval = 0.f;
-    for (int i = 0; i < phase; i++) {
-        // global -> shared: load tile
-        if (grow < M && i * TILEDIM + tx < K)
-            tileA[ty][tx] = a[grow * K + i * TILEDIM + tx];
-        else
-            tileA[ty][tx] = 0.f;
-        if (i * TILEDIM + ty < K && gcol < N)
-            tileB[ty][tx] = b[(i * TILEDIM + ty) * N + gcol];
-        else
-            tileB[ty][tx] = 0.f;
+    for (int k = 0; k < K; k += TK) {
+        // global to shared
+        if (ty < TM && tx < TK)  // 必须加判断，否则会段错误。因为此时block里的线程数量比As里的元素数量多，下面Bs同理
+            As[ty][tx] = A[ty * K + tx];
+        if (ty < TK && tx < TN)
+            Bs[ty][tx] = B[ty * N + tx];
         __syncthreads();
+
+        // 移动到下一个迭代的位置
+        A += TK;
+        B += TK * N;
 
         // partial dot product
-        for (int k = 0; k < TILEDIM; k++) {
-            pval += tileA[ty][k] * tileB[k][tx];
+        for (int i = 0; i < TK; i++) {
+            pval += As[ty][i] * Bs[i][tx];
         }
+        // FMA计算需要读取缓存数据，在新一轮写入缓存前进行同步，确保所有线程计算完成
         __syncthreads();
     }
-
-    if (grow < M && gcol < N) {
-        c[grow * N + gcol] = alpha * pval + beta * c[grow * N + gcol];
-    }
+    C[ty * N + tx] = alpha * pval + beta * C[ty * N + tx];
 }
 
 void init(float *a, float *b, int M, int N, int K) {
@@ -70,6 +72,9 @@ int main(int argc, char **argv) {
     int M = 8192;
     int N = 8192;
     int K = 4096;
+    constexpr int TM = 32;
+    constexpr int TN = 32;
+    constexpr int TK = 32;
     int nWarmup = 2;
     int nIters = 50;
     assert(argc == 1 || argc == 3 || argc == 6);
@@ -84,8 +89,6 @@ int main(int argc, char **argv) {
     }
     const float alpha = 1.f;
     const float beta = 0.f;
-    const int BLOCKDIM = 32;
-    const int TILEDIM = 32;
     float elapsed_my = 0.f;
     float elapsed_cublas = 0.f;
     size_t size = sizeof(float) * M * N;
@@ -101,8 +104,8 @@ int main(int argc, char **argv) {
     cudaMalloc((void **) &c_d, size);
     cudaMemcpy(a_d, a_h, size, cudaMemcpyHostToDevice);
     cudaMemcpy(b_d, b_h, size, cudaMemcpyHostToDevice);
-    dim3 gridDim(ceil(1.f * M / BLOCKDIM), ceil(1.f * N / BLOCKDIM), 1);
-    dim3 blockDim(BLOCKDIM, BLOCKDIM, 1);
+    dim3 gridDim(ceil(1.f * N / TN), ceil(1.f * M / TM), 1);
+    dim3 blockDim(TN, TM, 1);
 
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
@@ -111,7 +114,7 @@ int main(int argc, char **argv) {
     // my sgemm
     for (int i = 0; i < nIters + nWarmup; i++) {
         cudaEventRecord(start);
-        sgemm_v1<TILEDIM><<<gridDim, blockDim>>>(a_d, b_d, c_d, M, N, K, alpha, beta);
+        sgemm_v1<TM, TN, TK><<<gridDim, blockDim>>>(a_d, b_d, c_d, M, N, K, alpha, beta);
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
         if (i >= nWarmup) {

@@ -8,54 +8,70 @@
 #include <sys/cdefs.h>
 #include <cublas_v2.h>
 
+#define OFFSET(row, col, stride) ((row) * (stride) + (col))
+
 using namespace std;
 
-template<int TILEDIM, int COARSENING_FACTOR, int PATCH>
-__global__ void sgemm_v2(const float *__restrict__ a, const float *__restrict__ b, float *c, 
+template<int TM, int TN, int TK, int RM, int RN>
+__global__ void sgemm_v2(const float *__restrict__ A, const float *__restrict__ B, float *C, 
                         int M, int N, int K,
                         float alpha, float beta) {
-    int tx = threadIdx.x, ty = threadIdx.y;
-    int bx = blockIdx.x, by = blockIdx.y;
-    int grow = by * blockDim.y * COARSENING_FACTOR + ty;
-    int gcol = bx * blockDim.x + tx;
-    __shared__ float tileA[TILEDIM][TILEDIM];
-    __shared__ float tileB[TILEDIM][TILEDIM];
+    const int bx = blockIdx.x;
+    const int by = blockIdx.y;
+    constexpr int thread_nums = (TM / RM) * (TN / RN);
+    // (ty, tx) 是每个线程所负责的RM*RN块的左上角坐标
+    const int x_st = (threadIdx.x % (TN / RN)) * RN;
+    const int y_st = (threadIdx.x / (TM / RM)) * RM;
+    
+    __shared__ float As[TM][TK];
+    __shared__ float Bs[TK][TN];
 
-    int phase = ceil(1.f * K / TILEDIM);
-    float pval[COARSENING_FACTOR] = {0.f};
-    for (int i = 0; i < phase; i++) {
-        // global -> shared: load tile
-        #pragma unroll
-        for (int j = 0; j < COARSENING_FACTOR; j++) {
-            if (grow + j * PATCH < M && i * TILEDIM + tx < K)
-                tileA[ty + j * PATCH][tx] = a[(grow + j * PATCH) * K + i * TILEDIM + tx];
-            else
-                tileA[ty + j * PATCH][tx] = 0.f;
+    // 移动到当前要处理的C block，以及A和B的起始位置
+    A = &A[by * TM * K];
+    B = &B[bx * TN];
+    C = &C[by * TM * N + bx * TN];
+
+    // 重新将一维的线程组织成二维的:
+    // 组织成有TK列的线程，用来搬运数据到As
+    const int a_tile_y = threadIdx.x / TK;
+    const int a_tile_x = threadIdx.x % TK;
+    constexpr int a_tile_stride = thread_nums / TK; // 每轮跨越的行数
+    // 组织成有TN列的线程，用来搬运数据到Bs
+    const int b_tile_y = threadIdx.x / TN;
+    const int b_tile_x = threadIdx.x % TN;
+    constexpr int b_tile_stride = thread_nums / TN;
+
+    float pval[RM][RN] = {0.f};  // 每个线程负责RM*RN个位置
+    for (int phase = 0; phase < K; phase += TK) {
+        // global to shared
+        for (int i = 0; i < TM; i += a_tile_stride) {
+            As[a_tile_y + i][a_tile_x] = A[OFFSET(a_tile_y + i, a_tile_x, K)];
         }
-        #pragma unroll
-        for (int j = 0; j < COARSENING_FACTOR; j++) {
-            if (i * TILEDIM + ty + j * PATCH < K && gcol < N)
-                tileB[ty + j * PATCH][tx] = b[(i * TILEDIM + ty + j * PATCH) * N + gcol];
-            else 
-                tileB[ty + j * PATCH][tx] = 0.f;
+        for (int i = 0; i < TK; i += b_tile_stride) {
+            Bs[b_tile_y + i][b_tile_x] = B[OFFSET(b_tile_y + i, b_tile_x, N)];
         }
         __syncthreads();
 
+        // 移动到下一个迭代的位置
+        A += TK;
+        B += TK * N;
+
         // partial dot product
-        for (int k = 0; k < TILEDIM; k++) {
-            float reg_b = tileB[k][tx];
-            #pragma unroll
-            for (int p = 0; p < COARSENING_FACTOR; p++) {
-                pval[p] += tileA[ty + p * PATCH][k] * reg_b;  // register value can be reused multiple times
-            }
+        for (int k = 0; k < TK; k++) {
+            // shared to register
+            float Areg[RM], Breg[RN];
+            for (int m = 0; m < RM; m++) Areg[m] = As[y_st + m][k];
+            for (int n = 0; n < RN; n++) Breg[n] = Bs[k][x_st + n];
+
+            for (int m = 0; m < RM; m++)
+                for (int n = 0; n < RN; n++)
+                    pval[m][n] += Areg[m] * Breg[n];
         }
         __syncthreads();
     }
-
-    #pragma unroll
-    for (int i = 0; i < COARSENING_FACTOR; i++) {
-        if (grow + i * PATCH < M && gcol < N)
-            c[(grow + i * PATCH) * N + gcol] = alpha * pval[i] + beta * c[(grow + i * PATCH) * N + gcol];
+    for (int m = 0; m < RM; m++) {
+        for (int n = 0; n < RN; n++)
+            C[OFFSET(y_st + m, x_st + n, N)] = alpha * pval[m][n] + beta * C[OFFSET(y_st + m, x_st + n, N)];
     }
 }
 
@@ -82,6 +98,11 @@ int main(int argc, char **argv) {
     int M = 8192;
     int N = 8192;
     int K = 4096;
+    constexpr int TM = 128;
+    constexpr int TN = 128;
+    constexpr int TK = 8;
+    constexpr int RM = 8;
+    constexpr int RN = 8;
     int nWarmup = 2;
     int nIters = 50;
     assert(argc == 1 || argc == 3 || argc == 6);
@@ -96,9 +117,6 @@ int main(int argc, char **argv) {
     }
     const float alpha = 1.f;
     const float beta = 0.f;
-    const int BLOCKDIM = 32;
-    const int TILEDIM = 32;
-    const int COARSENING_FACTOR = 2;
     float elapsed_my = 0.f;
     float elapsed_cublas = 0.f;
     size_t size = sizeof(float) * M * N;
@@ -114,8 +132,8 @@ int main(int argc, char **argv) {
     cudaMalloc((void **) &c_d, size);
     cudaMemcpy(a_d, a_h, size, cudaMemcpyHostToDevice);
     cudaMemcpy(b_d, b_h, size, cudaMemcpyHostToDevice);
-    dim3 gridDim(ceil(1.f * M / BLOCKDIM), ceil(1.f * N / BLOCKDIM), 1);
-    dim3 blockDim(BLOCKDIM, BLOCKDIM / COARSENING_FACTOR, 1);  // block 的y维缩小COARSENING_FACTOR倍
+    dim3 gridDim(ceil(1.f * N / TN), ceil(1.f * M / TM), 1);
+    dim3 blockDim((TN / RN) * (TM / RM), 1, 1);
 
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
@@ -124,7 +142,7 @@ int main(int argc, char **argv) {
     // my sgemm
     for (int i = 0; i < nIters + nWarmup; i++) {
         cudaEventRecord(start);
-        sgemm_v2<TILEDIM, COARSENING_FACTOR, BLOCKDIM / COARSENING_FACTOR><<<gridDim, blockDim>>>(a_d, b_d, c_d, M, N, K, alpha, beta);
+        sgemm_v2<TM, TN, TK, RM, RN><<<gridDim, blockDim>>>(a_d, b_d, c_d, M, N, K, alpha, beta);
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
         if (i >= nWarmup) {
