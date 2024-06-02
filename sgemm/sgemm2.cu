@@ -19,7 +19,7 @@ __global__ void sgemm_v2(const float *__restrict__ A, const float *__restrict__ 
     const int bx = blockIdx.x;
     const int by = blockIdx.y;
     constexpr int thread_nums = (TM / RM) * (TN / RN);
-    // (ty, tx) 是每个线程所负责的RM*RN块的左上角坐标
+    // (y_st, x_st) 是每个线程所负责的RM*RN块的左上角坐标
     const int x_st = (threadIdx.x % (TN / RN)) * RN;
     const int y_st = (threadIdx.x / (TM / RM)) * RM;
     
