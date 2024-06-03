@@ -1,0 +1,6 @@
+- sgemm0: naive
+- sgemm1: using shared memory to cache global memory, each thread is responsible for a location of C
+- sgemm2: using register to cache shared memory, each thread is responsible for RM*RN location of C
+- sgemm3: using vector instruction (float4)
+- sgemm4: double buffering
+- sgemm5: remove shared memory bank conflic
