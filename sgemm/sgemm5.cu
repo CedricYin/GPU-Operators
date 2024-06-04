@@ -20,9 +20,9 @@ __global__ void sgemm_v5(float *__restrict__ A, float *__restrict__ B, float *C,
     const int bx = blockIdx.x;
     const int by = blockIdx.y;
     constexpr int thread_nums = (TM / RM) * (TN / RN);
-    // (y_st, x_st) 是每个线程所负责的RM*RN块的左上角坐标
-    const int x_st = (threadIdx.x % (TN / RN)) * RN;
-    const int y_st = (threadIdx.x / (TM / RM)) * RM;
+    // 因为进一步tile了，这里要y_st和x_st要除以2
+    const int x_st = (threadIdx.x % (TN / RN)) * RN / 2;
+    const int y_st = (threadIdx.x / (TM / RM)) * RM / 2;
     
     // double buffer
     __shared__ float As[2][TK][TM + 4];  // 为了解决bank conflic以及对齐float4，直接padding四个单位
@@ -68,9 +68,12 @@ __global__ void sgemm_v5(float *__restrict__ A, float *__restrict__ B, float *C,
         for (int k = 0; k < TK; k++) {
             // shared to register
             float Areg[RM], Breg[RN];
-            for (int m = 0; m < RM; m += 4) FETCH_FLOAT4(Areg[m]) = FETCH_FLOAT4(As[write_idx][k][y_st + m]);
-            for (int n = 0; n < RN; n += 4) FETCH_FLOAT4(Breg[n]) = FETCH_FLOAT4(Bs[write_idx][k][x_st + n]);
-
+            FETCH_FLOAT4(Areg[0]) = FETCH_FLOAT4(As[write_idx][k][y_st]);
+            FETCH_FLOAT4(Areg[4]) = FETCH_FLOAT4(As[write_idx][k][y_st + TM / 2]);  
+            FETCH_FLOAT4(Breg[0]) = FETCH_FLOAT4(Bs[write_idx][k][x_st]);
+            FETCH_FLOAT4(Breg[4]) = FETCH_FLOAT4(Bs[write_idx][k][x_st + TN / 2]);
+            
+            // 进一步tile不影响下面的计算
             for (int m = 0; m < RM; m++)
                 for (int n = 0; n < RN; n++)
                     pval[m][n] += Areg[m] * Breg[n];
@@ -79,16 +82,15 @@ __global__ void sgemm_v5(float *__restrict__ A, float *__restrict__ B, float *C,
         write_idx ^= 1;  // 切换buffer
     }
 
-    float c_tmp[4] = {0.f};
-    for (int m = 0; m < RM; m++) {
-        for (int n = 0; n < RN; n += 4) {
-            FETCH_FLOAT4(c_tmp[0]) = FETCH_FLOAT4(C[OFFSET(y_st + m, x_st + n, N)]);
-            c_tmp[0] = alpha * pval[m][n] + beta * c_tmp[0];
-            c_tmp[1] = alpha * pval[m][n + 1] + beta * c_tmp[1];
-            c_tmp[2] = alpha * pval[m][n + 2] + beta * c_tmp[2];
-            c_tmp[3] = alpha * pval[m][n + 3] + beta * c_tmp[3];
-            FETCH_FLOAT4(C[OFFSET(y_st + m, x_st + n, N)]) = FETCH_FLOAT4(c_tmp[0]);
-        }
+    for (int i = 0; i < RM / 2; i++) {
+        const int row1 = y_st + i;
+        const int row2 = y_st + i + TM / 2;
+        const int col1 = x_st;
+        const int col2 = x_st + TN / 2;
+        FETCH_FLOAT4(C[OFFSET(row1, col1, N)]) = FETCH_FLOAT4(pval[i][0]);
+        FETCH_FLOAT4(C[OFFSET(row1, col2, N)]) = FETCH_FLOAT4(pval[i][4]);
+        FETCH_FLOAT4(C[OFFSET(row2, col1, N)]) = FETCH_FLOAT4(pval[i + RM / 2][0]);
+        FETCH_FLOAT4(C[OFFSET(row2, col2, N)]) = FETCH_FLOAT4(pval[i + RM / 2][4]);
     }
 }
 
