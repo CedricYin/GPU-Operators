@@ -23,13 +23,13 @@ __device__ __forceinline__ void warp_reduce(volatile float *input, unsigned tx) 
     // input[tx] = x;         __syncwarp();
     // x += input[tx + 1];    __syncwarp();
     // input[tx] = x;         __syncwarp();
-
-    if (BLOCKDIM >= 64) {input[tx] += input[tx + 32];  __syncwarp();}
-    if (BLOCKDIM >= 32) {input[tx] += input[tx + 16];  __syncwarp();}
-    if (BLOCKDIM >= 16) {input[tx] += input[tx +  8];  __syncwarp();}
-    if (BLOCKDIM >=  8) {input[tx] += input[tx +  4];  __syncwarp();}
-    if (BLOCKDIM >=  4) {input[tx] += input[tx +  2];  __syncwarp();}
-    if (BLOCKDIM >=  2) {input[tx] += input[tx +  1];  __syncwarp();}
+    float x = input[tx];
+    if (BLOCKDIM >= 64) {x += input[tx + 32]; input[tx] = x; __syncwarp();}
+    if (BLOCKDIM >= 32) {x += input[tx + 16]; input[tx] = x; __syncwarp();}
+    if (BLOCKDIM >= 16) {x += input[tx +  8]; input[tx] = x; __syncwarp();}
+    if (BLOCKDIM >=  8) {x += input[tx +  4]; input[tx] = x; __syncwarp();}
+    if (BLOCKDIM >=  4) {x += input[tx +  2]; input[tx] = x; __syncwarp();}
+    if (BLOCKDIM >=  2) {x += input[tx +  1]; input[tx] = x; __syncwarp();}
 }
 
 // using block reduce
