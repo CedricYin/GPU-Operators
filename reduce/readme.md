@@ -10,9 +10,9 @@
 
 ### 3.0 测试结果
 
-测试环境：V100 GPU，peak bandwidth为900GB/s
+测试环境：V100 GPU，peak bandwidth约为900GB/s
 
-|reduce kernel|bandwidth (GB/s)|% of peak bandwidth||
+|kernel|bandwidth (GB/s)|% of peak bandwidth||
 |-|-|-|-|
 |0 naive|243.221|30.4%||
 |1 消除control diverge|472.763|52.5%|此方法顺便使得使用shared mem时不会存在bank conflict|
@@ -20,4 +20,7 @@
 |3 thread coarsening|862.892|95.9%||
 |4 warp reduce|864.324|96.0%|展开warp，用更细粒度的warp的同步方法代替sync thread，更细粒度意味着开销更小。从结果上看作用并不明显。|
 |5 block reduce|865.483|96.2%||
-|6 shuffle||||
+|6 shuffle|866.35|96.3%||
+
+
+
