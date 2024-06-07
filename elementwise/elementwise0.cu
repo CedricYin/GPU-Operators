@@ -8,10 +8,10 @@
 
 using namespace std;
 
-#define N 1024 * 1024 * 32
+#define N 8192*8192
 #define BLOCKDIM 1024
 
-__global__ void elementwise0_baseline(float *a, float *b, float *c) {
+__global__ void elementwise0(const float *__restrict__ a, const float *__restrict__ b, float *c) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     c[i] = a[i] + b[i];
 }
@@ -45,20 +45,33 @@ int main() {
     cudaEventCreate(&stop);
     dim3 gridDim(ceil(1.f * N / BLOCKDIM));
     dim3 blockDim(BLOCKDIM);
-    cudaEventRecord(start);
-    elementwise0_baseline<<<gridDim, blockDim>>>(a_d, b_d, c_d);
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    float elapsedTime;
-    cudaEventElapsedTime(&elapsedTime, start, stop);
 
-    cudaMemcpy(c_h, c_d, size, cudaMemcpyDeviceToHost);
-
-    if (!check_ans(c_h)) {
-        cerr << "answer is wrong!" << endl;
-        return -1;
+    const int nWarmup = 2;
+    const int nIter = 10;
+    float elapsedTime = 0;
+    for (int i = 0; i < nWarmup + nIter; i++) {
+        cudaEventRecord(start);
+        elementwise0<<<gridDim, blockDim>>>(a_d, b_d, c_d);
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        if (i == 0) {
+            cudaMemcpy(c_h, c_d, size, cudaMemcpyDeviceToHost);
+            if (!check_ans(c_h)) {
+                cerr << "answer is wrong!" << endl;
+                return -1;
+            }
+        }
+        if (i >= nWarmup) {
+            float ms;
+            cudaEventElapsedTime(&ms, start, stop);
+            cout << i - nWarmup << ": " << ms << " ms\n";
+            elapsedTime += ms;
+        }
     }
 
-    cout << "elapsedTime: " << elapsedTime * 1000 << " ns" << endl;
+    const unsigned int nbytes = 3 * size;
+    double bw = 1. * nbytes / (elapsedTime / nIter / 1000) / 1e9;
+    cout << "effective bandwidth: " << bw << "GB/s\n";
+    cout << "% of V100 peak bandwidth: " << bw / 900 * 100 << "%" << endl;
     return 0;
 }

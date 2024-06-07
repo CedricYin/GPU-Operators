@@ -8,13 +8,13 @@
 
 using namespace std;
 
-#define N 1024 * 1024 * 32
+#define N 8192*8192
 #define BLOCKDIM 1024
 #define VECTOR_FACTOR 2
 
 #define FETCH_VEC2(ptr) (((float2 *) (ptr))[0])
 
-__global__ void elementwise1_vec2(float *a, float *b, float *c) {
+__global__ void elementwise1(const float *__restrict__ a, const float *__restrict__ b, float *c) {
     int i = (blockDim.x * blockIdx.x + threadIdx.x) * VECTOR_FACTOR;
     float2 vec2_a = FETCH_VEC2(&a[i]);
     float2 vec2_b = FETCH_VEC2(&b[i]);
@@ -53,20 +53,32 @@ int main() {
     cudaEventCreate(&stop);
     dim3 gridDim(ceil(1.f * N / BLOCKDIM / VECTOR_FACTOR));
     dim3 blockDim(BLOCKDIM);
-    cudaEventRecord(start);
-    elementwise1_vec2<<<gridDim, blockDim>>>(a_d, b_d, c_d);
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    float elapsedTime;
-    cudaEventElapsedTime(&elapsedTime, start, stop);
-
-    cudaMemcpy(c_h, c_d, size, cudaMemcpyDeviceToHost);
-
-    if (!check_ans(c_h)) {
-        cerr << "answer is wrong!" << endl;
-        return -1;
+    const int nWarmup = 2;
+    const int nIter = 10;
+    float elapsedTime = 0;
+    for (int i = 0; i < nWarmup + nIter; i++) {
+        cudaEventRecord(start);
+        elementwise1<<<gridDim, blockDim>>>(a_d, b_d, c_d);
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        if (i == 0) {
+            cudaMemcpy(c_h, c_d, size, cudaMemcpyDeviceToHost);
+            if (!check_ans(c_h)) {
+                cerr << "answer is wrong!" << endl;
+                return -1;
+            }
+        }
+        if (i >= nWarmup) {
+            float ms;
+            cudaEventElapsedTime(&ms, start, stop);
+            cout << i - nWarmup << ": " << ms << " ms\n";
+            elapsedTime += ms;
+        }
     }
 
-    cout << "elapsedTime: " << elapsedTime * 1000 << " ns" << endl;
+    const unsigned int nbytes = 3 * N * 4;
+    double bw = 1. * bw / (elapsedTime / nIter / 1000) / 1e9;
+    cout << "effective bandwidth: " << bw << "GB/s\n";
+    cout << "% of V100 peak bandwidth: " << bw / 900 * 100 << "%" << endl;
     return 0;
 }
