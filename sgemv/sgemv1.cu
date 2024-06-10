@@ -26,13 +26,18 @@ __device__ __forceinline__ float warp_reduce(float x) {
   return x;
 }
 
-__global__ void sgemv0(const float *__restrict__ A, const float *__restrict__ b,
+__global__ void sgemv1(float *__restrict__ A, float *__restrict__ b,
                        float *c, const uint M, const uint N) {
   const uint bx = blockIdx.x;
   const uint tx = threadIdx.x;
   const uint ty = threadIdx.y;
   uint row = bx * blockDim.y + ty;
-  float pval = A[OFFSET(row, tx, N)] * b[tx];
+  float4 a_vec = reinterpret_cast<float4 *>(A)[OFFSET(row / 4, tx, N)];  // 注意这里的步幅是4，所以row需要除4
+  float4 b_vec = reinterpret_cast<float4 *>(b)[tx];
+  float pval = a_vec.x * b_vec.x;
+  pval += a_vec.y * b_vec.y;
+  pval += a_vec.z * b_vec.z;
+  pval += a_vec.w * b_vec.w;
   float val = warp_reduce(pval);
   if (tx == 0) {
     c[row] = val;
@@ -59,7 +64,7 @@ void check_ans(const float *a, const float *b, const uint M) {
 
 int main(int argc, char **argv) {
   uint M = 16384;
-  uint N = 32;
+  uint N = 128;
   const uint64_t flop = 2L * N * M;
   uint nWarmup = 5;
   uint nIters = 1000;
@@ -92,7 +97,7 @@ int main(int argc, char **argv) {
 
   for (uint i = 0; i < nWarmup + nIters; i++) {
     CHECK(cudaEventRecord(start));
-    sgemv0<<<gridDim, blockDim>>>(A_d, b_d, c_d, M, N);
+    sgemv1<<<gridDim, blockDim>>>(A_d, b_d, c_d, M, N);
     CHECK(cudaEventRecord(stop));
     CHECK(cudaEventSynchronize(stop));
     if (i == 0) {
